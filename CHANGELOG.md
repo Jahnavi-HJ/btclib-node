@@ -558,6 +558,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `bitcoind` words them** (closes #1267), with no path; a line ends at a
   newline alone, as Core counts it.
 
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
