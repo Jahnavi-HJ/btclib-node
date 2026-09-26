@@ -575,6 +575,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
   and stop the node** (closes #1243).
 
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
