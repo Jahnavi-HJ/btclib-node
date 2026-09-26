@@ -496,6 +496,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Its list is the method table's, with no count** (closes #1221).
 
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
