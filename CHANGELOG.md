@@ -581,6 +581,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `bad-version` from that BIP's height, and its sender discouraged, as in
   Core** (closes #1262).
 
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
