@@ -540,6 +540,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `getaddr`, a peer this node dialled `true` from its `version`**, where the
   `getaddr` to it goes too (closes #1178).
 
+### The dialler passes over the draws Core's loop passes over
+
+- **A draw is passed over for an `-addnode` peer or missing services, and
+  early in a pass for a recent try or a bad port** (closes #1224), as in Core;
+  a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
