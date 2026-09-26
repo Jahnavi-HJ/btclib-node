@@ -587,6 +587,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   nothing for info, and `[debug]` for a debug line, where Core's carries its
   category instead.
 
+### Each chain asks Core's DNS seeds
+
+- **Every chain's seed list is Core v31.1's `vSeeds`, trailing dot included**
+  (closes #1303), where mainnet asked two seeds Core dropped and signet an IP
+  address; regtest names Core's `dummySeed.invalid.`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
