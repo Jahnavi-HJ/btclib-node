@@ -563,6 +563,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `setban` ban that names no length lasts `-bantime` seconds** (closes
   #1219), 86400 by default, as `bitcoind` has it.
 
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
