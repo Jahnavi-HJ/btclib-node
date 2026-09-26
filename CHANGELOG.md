@@ -546,6 +546,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   early in a pass for a recent try or a bad port** (closes #1224), as in Core;
   a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
 
+### An outbound peer with too little work is dropped in IBD, as in Core
+
+- **During initial block download, a peer this node drew whose headers chain
+  has less than the minimum chain work is disconnected, after a batch this
+  node already had** (closes #1230).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
