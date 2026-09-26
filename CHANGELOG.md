@@ -529,6 +529,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
   refuses it for `-rpcbind`; `int` read each as a number.
 
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
