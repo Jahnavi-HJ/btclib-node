@@ -534,6 +534,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
   is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
 
+### `getpeerinfo`'s `addr_relay_enabled` is Core's
+
+- **An inbound peer answers `false` until its first `addr`, `addrv2` or
+  `getaddr`, a peer this node dialled `true` from its `version`**, where the
+  `getaddr` to it goes too (closes #1178).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
