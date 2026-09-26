@@ -569,6 +569,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
   unstored, and its peer is not punished** (closes #1247).
 
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
