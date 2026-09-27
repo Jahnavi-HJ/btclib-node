@@ -787,6 +787,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   #1313, closes #1324), where a value that is not an integer was refused;
   `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
 
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
