@@ -829,6 +829,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   I2P host is a `-rpcallowip` subnet, as in `bitcoind` (closes #1288), though
   it matches no JSON-RPC client.
 
+### The automatic dial passes over this node's own address, as in Core
+
+- **A listening node records its routable interface addresses, and a draw or
+  an anchor at one, on any port, ends the pass** (closes #1238); on Windows
+  none is found (#1310).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
