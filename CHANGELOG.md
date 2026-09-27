@@ -616,6 +616,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
   where it was local time with milliseconds and ` - `.
 
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
