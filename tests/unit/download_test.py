@@ -100,6 +100,7 @@ def a_conn(
         stop=lambda: stopped.append(True),
         stopped=stopped,
         block_relay=block_relay,
+        feeler=False,
         connected_time=connected_time,
         last_novel_block_time=last_novel_block_time,
         tx_announce_queue=[],

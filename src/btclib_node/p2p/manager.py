@@ -14,6 +14,7 @@ own `promote_connection`, directly.
 """
 
 import asyncio
+import enum
 import errno
 import math
 import secrets
@@ -25,6 +26,7 @@ from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
@@ -115,10 +117,9 @@ _REDIAL_MAX_SECONDS = 60.0
 # The outbound slots Core reserves out of `-maxconnections` before
 # inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
 # `MAX_BLOCK_RELAY_ONLY_CONNECTIONS` and `MAX_FEELER_CONNECTIONS`
-# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node
-# dials no feeler connection, and reserves its slot all the same, so
-# that a peer finds as many inbound slots here as in a Core node given
-# the same `-maxconnections`.
+# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so that a
+# peer finds as many inbound slots here as in a Core node given the same
+# `-maxconnections`.
 _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
 _MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
 _MAX_FEELER_CONNECTIONS = 1
@@ -256,6 +257,30 @@ _BAD_PORTS = frozenset(
 # peers, in seconds.
 _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5 * 60
 
+# Core's `FEELER_INTERVAL` (`src/net.h`) and `FEELER_SLEEP_WINDOW`
+# (`src/net.cpp`), same sha: the mean of the exponential draw between two
+# feelers, and the window of the uniform wait before one is dialled, in
+# seconds.
+_FEELER_INTERVAL = 2 * 60
+_FEELER_SLEEP_WINDOW = 1.0
+
+
+class _Outbound(enum.Enum):
+    """The automatic connection kinds `ThreadOpenConnections` opens."""
+
+    FULL_RELAY = enum.auto()
+    BLOCK_RELAY = enum.auto()
+    FEELER = enum.auto()
+
+
+def _may_have_useful_address_db(address: NetworkAddressV2) -> bool:
+    """Core's `MayHaveUsefulAddressDB`, of `address`'s own services."""
+    return bool(
+        address.services
+        & (ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED)
+    )
+
+
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
 # (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
@@ -378,6 +403,8 @@ class P2pManager(threading.Thread):
         # `run` draws before the first pass.
         self.start_extra_block_relay_peers = False
         self._next_extra_block_relay = math.inf
+        # Core's `next_feeler`, drawn by `run` as the other timer is
+        self._next_feeler = math.inf
         # Core's `m_added_node_params` as `AddedNodesContain` reads it:
         # each `-addnode` value as given, compared with a drawn address's
         # text, and nothing at all past `_ADDED_NODES_BOUND` values.
@@ -595,6 +622,7 @@ class P2pManager(threading.Thread):
         inbound: bool,
         automatic: bool = False,
         block_relay: bool = False,
+        feeler: bool = False,
         prefer_evict: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -647,6 +675,7 @@ class P2pManager(threading.Thread):
         )
         conn.automatic = automatic
         conn.block_relay = block_relay
+        conn.feeler = feeler
         conn.prefer_evict = prefer_evict
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
@@ -1024,6 +1053,7 @@ class P2pManager(threading.Thread):
         # count is.
         automatic = self._automatic_outbound()
         block_relay = sum(conn.block_relay for conn in automatic)
+        feelers = sum(conn.feeler for conn in automatic)
         if len(automatic) >= self.max_automatic_outbound:
             return
         # Past the grant and ahead of the two targets, as Core takes a
@@ -1035,10 +1065,8 @@ class P2pManager(threading.Thread):
             self._maybe_add_fixed_seeds()
         except Exception:
             self.logger.exception("Exception occurred")
-        dial_block_relay = self._next_block_relay(
-            len(automatic) - block_relay, block_relay
-        )
-        if dial_block_relay is None or self.peer_db.is_empty:
+        kind = self._next_outbound(len(automatic) - block_relay - feelers, block_relay)
+        if kind is None or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries the timestamp and services its rows were last
@@ -1059,19 +1087,17 @@ class P2pManager(threading.Thread):
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
-        # which here are every connection not inbound, pending ones
-        # included. A peer off IPv4 and IPv6 adds no group, as Core
-        # adds none for Tor, I2P or CJDNS (`src/net.cpp`, at
+        # which here are every connection neither inbound nor a feeler,
+        # pending ones included. A peer off IPv4 and IPv6 adds no group,
+        # as Core adds none for Tor, I2P or CJDNS (`src/net.cpp`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         outbound_net_groups = {
             net_group(conn.address)
             for conn in connected
-            if not conn.inbound and can_addrv1(conn.address)
+            if not conn.inbound and not conn.feeler and can_addrv1(conn.address)
         }
         try:
-            await self._dial_one_draw(
-                already_connected, outbound_net_groups, block_relay=dial_block_relay
-            )
+            await self._dial_one_draw(already_connected, outbound_net_groups, kind)
         except Exception:
             self.logger.exception("Exception occurred")
 
@@ -1079,20 +1105,28 @@ class P2pManager(threading.Thread):
         self,
         already_connected: set[bytes],
         outbound_net_groups: set[bytes],
-        *,
-        block_relay: bool,
+        kind: _Outbound,
     ) -> None:
         """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
 
-        A dial is block-relay-only where `block_relay` is set. Split out
-        of `_maybe_dial_more_peers` for ruff's complexity ceiling; that
-        method's own `try` guards it.
+        The dial is of `kind`. A feeler draws from the gossiped
+        addresses not in the answered table, which
+        `get_active_addresses` prunes by age
+        (btclib-org/btclib-node#1318), standing in for Core's
+        `Select(true, ...)` of the new table. It is held to no network
+        group, and wants only `MayHaveUsefulAddressDB` of what it draws.
+        Core's `SelectTriedCollision`, asked first, has nothing to
+        answer here, this table keeping no tried buckets to collide in.
+        Split out of `_maybe_dial_more_peers` for ruff's complexity
+        ceiling; that method's own `try` guards it.
         """
-        # A draw in the group of an outbound peer is followed by
+        feeler = kind is _Outbound.FEELER
+        # A draw in the group of an outbound peer, or a feeler's draw of
+        # an address with no useful address table, is followed by
         # another, up to `_MAX_DRAWS_PER_PASS`, as Core's loop
-        # `continue`s on it: one draw a pass would stall wherever
+        # `continue`s on either: one draw a pass would stall wherever
         # the table is mostly such peers (btclib-org/btclib-node#1201).
-        draw = self.peer_db.address_sampler()
+        draw = self.peer_db.address_sampler(new_only=feeler)
         now = time.time()
         # Core's `nTries`, which counts the draw it is about to make
         for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
@@ -1106,9 +1140,13 @@ class P2pManager(threading.Thread):
             # from being a spin.
             if address is None:
                 break
-            if can_addrv1(address) and net_group(address) in outbound_net_groups:
+            if (
+                not feeler
+                and can_addrv1(address)
+                and net_group(address) in outbound_net_groups
+            ):
                 continue
-            if self._passed_over(address, tries, now):
+            if self._passed_over(address, tries, now, feeler=feeler):
                 continue
             # Any other draw ends the pass, as Core's loop breaks
             # with it and `OpenNetworkConnection` (`src/net.cpp`, at
@@ -1116,6 +1154,13 @@ class P2pManager(threading.Thread):
             # without dialling a peer already connected, discouraged
             # or banned, a discouraged one being one this node dropped
             # for cause (btclib-org/btclib-node#283).
+            if feeler:
+                # Core's "small amount of random noise before connection
+                # to avoid synchronization", ahead of the checks
+                # `OpenNetworkConnection` makes
+                await asyncio.sleep(
+                    secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW)
+                )
             held = endpoint_key(address) in already_connected
             if (
                 not held
@@ -1130,38 +1175,47 @@ class P2pManager(threading.Thread):
                         address,
                         inbound=False,
                         automatic=True,
-                        block_relay=block_relay,
+                        block_relay=kind is _Outbound.BLOCK_RELAY,
+                        feeler=feeler,
                     )
             break
 
-    def _next_block_relay(self, full_relay: int, block_relay: int) -> bool | None:
-        """Whether the next automatic dial is block-relay-only, or `None`.
+    def _next_outbound(self, full_relay: int, block_relay: int) -> _Outbound | None:
+        """Which automatic connection to open next, `None` for none.
 
-        `None` is no dial this pass. The order is
-        `ThreadOpenConnections`'s own (`src/net.cpp`, at
+        The order is `ThreadOpenConnections`'s own (`src/net.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): full-relay up to its
         target, then block-relay-only up to its own, then one more
-        block-relay-only peer each time the exponential timer comes due,
-        once `start_extra_block_relay_peers` is set -- the timer drawn
-        again when it is picked, whatever the draw from the table then
-        finds. `DownloadManager` drops the extra peer, or another, once
-        it is connected.
+        block-relay-only peer each time its exponential timer comes due,
+        once `start_extra_block_relay_peers` is set, then a feeler each
+        time its own timer does. A timer is drawn again when it is
+        picked, whatever the draw from the table then finds.
+        `DownloadManager` drops the extra peer, or another, once it is
+        connected, and `callbacks.version` a feeler as soon as it has
+        answered.
         """
         if full_relay < self.max_outbound_full_relay:
-            return False
+            return _Outbound.FULL_RELAY
         if block_relay < self.max_outbound_block_relay:
-            return True
+            return _Outbound.BLOCK_RELAY
         now = time.time()
         if self.start_extra_block_relay_peers and now > self._next_extra_block_relay:
             self._next_extra_block_relay = now + _exponential_delay(
                 _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
             )
-            return True
+            return _Outbound.BLOCK_RELAY
+        if now > self._next_feeler:
+            self._next_feeler = now + _exponential_delay(_FEELER_INTERVAL)
+            return _Outbound.FEELER
         return None
 
-    def _passed_over(self, address: NetworkAddressV2, tries: int, now: float) -> bool:
+    def _passed_over(
+        self, address: NetworkAddressV2, tries: int, now: float, *, feeler: bool
+    ) -> bool:
         """Answer whether `ThreadOpenConnections` draws again past `address`.
 
+        A feeler's draw is held to `MayHaveUsefulAddressDB` where any
+        other is held to `HasAllDesirableServiceFlags`, as in Core's loop.
         Its four `continue`s after the network-group one, in its order
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         Its invalid-or-local `break` and its unreachable-network
@@ -1174,7 +1228,10 @@ class P2pManager(threading.Thread):
         last_try = self.peer_db.last_try(address)
         if now - last_try < RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
             return True
-        if not _has_all_desirable_services(self.node, address.services):
+        if feeler:
+            if not _may_have_useful_address_db(address):
+                return True
+        elif not _has_all_desirable_services(self.node, address.services):
             return True
         # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
         if tries < _BAD_PORT_DRAWS and address.port in _BAD_PORTS:
@@ -1656,6 +1713,7 @@ class P2pManager(threading.Thread):
         self._next_extra_block_relay = now + _exponential_delay(
             _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
         )
+        self._next_feeler = now + _exponential_delay(_FEELER_INTERVAL)
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         loop.run_forever()
 

@@ -1486,6 +1486,28 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
     assert not peer_db.holds_network(BIP155Network.IPV4)
 
 
+def test_a_feeler_draws_what_the_answered_table_does_not_hold() -> None:
+    """ISS 1096: Core's `Select(true, ...)`, the new table alone.
+
+    An address answered, whatever timestamp the gossiped copy carries,
+    is not drawn, nor is one this node cannot dial; once every dialable
+    one is answered there is nothing to draw. The control, the sampler
+    without `new_only`, draws the answered address as well.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    new = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([replace(answered, timestamp=1), new, an_onion_address()])
+    peer_db.add_active_address(answered)
+    draw = peer_db.address_sampler(new_only=True)
+    assert {draw() for _ in range(40)} == {new}
+    both = peer_db.address_sampler()
+    drawn = {address_module.endpoint_key(cast("Any", both())) for _ in range(80)}
+    assert drawn == {address_module.endpoint_key(a) for a in (answered, new)}
+    peer_db.add_active_address(replace(new, timestamp=int(time.time())))
+    assert peer_db.address_sampler(new_only=True)() is None
+
+
 def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

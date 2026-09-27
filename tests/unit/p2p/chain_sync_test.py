@@ -68,6 +68,7 @@ def a_conn(
     best: int | None = None,
     automatic: bool = True,
     block_relay: bool = False,
+    feeler: bool = False,
 ) -> Any:
     """Build an outbound connection whose best known block is at `best`."""
     stopped: list[bool] = []
@@ -75,6 +76,7 @@ def a_conn(
         id=conn_id,
         automatic=automatic,
         block_relay=block_relay,
+        feeler=feeler,
         status=P2pConnStatus.Connected,
         chain_sync=ChainSyncTimeoutState(),
         block_availability=BlockAvailability(
@@ -295,3 +297,18 @@ def test_a_block_relay_only_peer_is_considered_and_never_protected(
     behind = a_conn(best=5, block_relay=block_relay)
     consider_eviction(a_node(10, behind), behind, 100.0, a_recorder()[1])
     assert behind.chain_sync.timeout == 100.0 + CHAIN_SYNC_TIMEOUT
+
+
+@pytest.mark.parametrize("feeler", [True, False])
+def test_a_feeler_is_neither_considered_nor_protected(*, feeler: bool) -> None:
+    """ISS 1096: Core's two predicates both leave `FEELER` out.
+
+    Behind the tip a feeler is given no deadline, and at the tip it is
+    not protected; the full-relay control is both.
+    """
+    behind = a_conn(best=5, feeler=feeler)
+    consider_eviction(a_node(10, behind), behind, 100.0, a_recorder()[1])
+    assert (behind.chain_sync.timeout == 0) is feeler
+    at_tip = a_conn(best=10, feeler=feeler)
+    protect_if_caught_up(a_node(10, at_tip), at_tip)
+    assert at_tip.chain_sync.protect is not feeler

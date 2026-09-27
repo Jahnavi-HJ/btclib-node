@@ -330,7 +330,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
     `version` ahead of all three; setting up address relay with a peer
     this node dialled, and asking it for addresses; and recording whether
-    the peer asked to have transactions relayed.
+    the peer asked to have transactions relayed. A feeler then has its
+    address recorded as answered, and is dropped once those are written,
+    as Core's `VERSION` handler ends one (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     if conn.version_message is not None:
         return
@@ -380,8 +383,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
     # `FEELER` connections and `true` for every other outbound kind. Of
     # this node's connections that is `conn.automatic`, what
-    # `_maybe_dial_more_peers` dials, and not a `-connect` or `-addnode`
-    # peer (btclib-org/btclib-node#725).
+    # `_maybe_dial_more_peers` dials, but a feeler, and not a `-connect`
+    # or `-addnode` peer (btclib-org/btclib-node#725).
     #
     # `_has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
@@ -415,6 +418,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if (
         conn.automatic
+        and not conn.feeler
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     ):
@@ -452,15 +456,36 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # landed on an attribute nothing reads and the connection's own flag
     # stayed true for its whole life. is_relay_requested and not relay
     # because an absent flag means true, which is BIP37's default and
-    # Core's. A block-relay-only connection relays no transaction
-    # whatever the peer asked for: Core's `VERSION` handler builds no
-    # `TxRelay` for one (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag), so nothing is announced to it and a `getdata` of
-    # its for a transaction goes unanswered.
-    conn.relay_tx = version_msg.is_relay_requested and not conn.block_relay
+    # Core's. A block-relay-only connection or a feeler relays no
+    # transaction whatever the peer asked for: Core's `VERSION` handler
+    # builds no `TxRelay` for either (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so nothing is announced
+    # to it and a `getdata` of its for a transaction goes unanswered.
+    conn.relay_tx = (
+        version_msg.is_relay_requested and not conn.block_relay and not conn.feeler
+    )
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
     conn.stats.time_offset = version_msg.timestamp - int(time.time())
+    _end_if_feeler(node, conn, version_msg.services)
+
+
+def _end_if_feeler(node: Node, conn: Connection, services: ServiceFlags) -> None:
+    """Record a feeler's address as answered, and drop it once sent.
+
+    Any other connection is left as it is. `SetupAddressRelay` holds
+    for a feeler, so `version` has asked it for addresses already.
+    `AddrMan::Good` is what a feeler is for; the table this records into
+    stamps the address answered now as well, which Core's `Good` does
+    not (btclib-org/btclib-node#1226). Split out of `version` for ruff's
+    complexity ceiling.
+    """
+    if not conn.feeler:
+        return
+    address = replace(conn.address, services=services)
+    node.p2p_manager.peer_db.add_active_address(address)
+    node.logger.debug("feeler connection completed, peer=%s", conn.id)
+    conn.stop_when_sent()
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
