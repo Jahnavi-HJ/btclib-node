@@ -605,6 +605,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   an outbound peer's `version` overwrites them** (closes #1276), as Core's
   `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
 
+### `testmempoolaccept` names a `rawtx` that is not a string, as Core
+
+- **`-3` "JSON value of type number is not of expected type string", before
+  any entry is validated** (closes #1253); a script shorter than its declared
+  length is an invalid serialization.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
