@@ -21,7 +21,7 @@ import secrets
 import socket
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
@@ -52,6 +52,8 @@ from btclib_node.p2p.callbacks import has_all_desirable_services
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
+    Network,
+    get_network,
     is_local,
     is_valid,
     keyed_net_group,
@@ -265,6 +267,11 @@ _BAD_PORTS = frozenset(
 # peers, in seconds.
 _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5 * 60
 
+# Core's `EXTRA_NETWORK_PEER_INTERVAL` (`src/net.cpp`, same sha): the
+# mean of the exponential draw between two extra peers dialled for a
+# network none of the outbound peers is on, in seconds.
+_EXTRA_NETWORK_PEER_INTERVAL = 5 * 60
+
 # Core's `FEELER_INTERVAL` (`src/net.h`) and `FEELER_SLEEP_WINDOW`
 # (`src/net.cpp`), same sha: the mean of the exponential draw between two
 # feelers, and the window of the uniform wait before one is dialled, in
@@ -281,6 +288,8 @@ class _Outbound(enum.Enum):
     FEELER = enum.auto()
     # a `BLOCK_RELAY` dial Core makes with its `anchor` flag set
     ANCHOR = enum.auto()
+    # an `OUTBOUND_FULL_RELAY` dial Core makes with `preferred_net` set
+    NETWORK = enum.auto()
 
 
 def _may_have_useful_address_db(address: NetworkAddressV2) -> bool:
@@ -635,6 +644,13 @@ class P2pManager(threading.Thread):
         self._next_extra_block_relay = math.inf
         # Core's `next_feeler`, drawn by `run` as the other timer is
         self._next_feeler = math.inf
+        # Core's `m_try_another_outbound_peer`, which `DownloadManager`
+        # sets from `Node`'s thread on a stale tip and clears, and
+        # `next_extra_network_peer`, drawn by `run`, with the network
+        # `_next_outbound` last picked for it, Core's `preferred_net`.
+        self.try_new_outbound_peer = False
+        self._next_extra_network_peer = math.inf
+        self._preferred_network = Network.IPV4
 
     # One keyword per fact a connection starts with and keeps, none of
     # them a knob of another, and every caller passes them by name.
@@ -1144,7 +1160,8 @@ class P2pManager(threading.Thread):
         if kind is _Outbound.ANCHOR:
             address = self._pop_anchor(outbound_net_groups)
         if address is None:
-            address = self._draw(outbound_net_groups, feeler=feeler)
+            network = self._preferred_network if kind is _Outbound.NETWORK else None
+            address = self._draw(outbound_net_groups, feeler=feeler, network=network)
         if address is None:
             return
         if feeler:
@@ -1205,9 +1222,16 @@ class P2pManager(threading.Thread):
         return None
 
     def _draw(
-        self, outbound_net_groups: set[bytes], *, feeler: bool
+        self,
+        outbound_net_groups: set[bytes],
+        *,
+        feeler: bool,
+        network: Network | None,
     ) -> NetworkAddressV2 | None:
         """Draw from the table up to `_MAX_DRAWS_PER_PASS` times.
+
+        An extra network peer draws on `network` alone, Core's
+        `Select(false, {preferred_net})`.
 
         A feeler draws from the gossiped addresses not in the answered
         table, which `get_active_addresses` prunes by age
@@ -1222,7 +1246,7 @@ class P2pManager(threading.Thread):
         # another, up to `_MAX_DRAWS_PER_PASS`, as Core's loop
         # `continue`s on either: one draw a pass would stall wherever
         # the table is mostly such peers (btclib-org/btclib-node#1201).
-        draw = self.peer_db.address_sampler(new_only=feeler)
+        draw = self.peer_db.address_sampler(new_only=feeler, network=network)
         now = time.time()
         # Core's `nTries`, which counts the draw it is about to make
         for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
@@ -1248,20 +1272,25 @@ class P2pManager(threading.Thread):
             return address
         return None
 
-    def _next_outbound(self, full_relay: int, block_relay: int) -> _Outbound | None:
+    # One return per arm of `ThreadOpenConnections`' own if/else chain.
+    def _next_outbound(  # noqa: PLR0911
+        self, full_relay: int, block_relay: int
+    ) -> _Outbound | None:
         """Which automatic connection to open next, `None` for none.
 
         The order is `ThreadOpenConnections`'s own (`src/net.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an anchor while one is
         left and the block-relay-only target is unmet, then full-relay up
-        to its target, then block-relay-only up to its own, then one more
-        block-relay-only peer each time its exponential timer comes due,
-        once `start_extra_block_relay_peers` is set, then a feeler each
-        time its own timer does. A timer is drawn again when it is
-        picked, whatever the draw from the table then finds.
-        `DownloadManager` drops the extra peer, or another, once it is
-        connected, and `callbacks.version` a feeler as soon as it has
-        answered.
+        to its target, then block-relay-only up to its own, then one
+        full-relay peer past the target while `try_new_outbound_peer` is
+        set, then one more block-relay-only peer each time its exponential
+        timer comes due, once `start_extra_block_relay_peers` is set, then
+        a feeler each time its own timer does, then, with eight full-relay
+        peers, one more on a network none of them is on each time its own
+        timer does. A timer is drawn again when it is picked, whatever the
+        draw from the table then finds. `DownloadManager` drops an extra
+        peer, or another, once it is connected, and `callbacks.version` a
+        feeler as soon as it has answered.
         """
         if self.anchors and block_relay < self.max_outbound_block_relay:
             return _Outbound.ANCHOR
@@ -1269,6 +1298,8 @@ class P2pManager(threading.Thread):
             return _Outbound.FULL_RELAY
         if block_relay < self.max_outbound_block_relay:
             return _Outbound.BLOCK_RELAY
+        if self.try_new_outbound_peer:
+            return _Outbound.FULL_RELAY
         now = time.time()
         if self.start_extra_block_relay_peers and now > self._next_extra_block_relay:
             self._next_extra_block_relay = now + _exponential_delay(
@@ -1278,7 +1309,57 @@ class P2pManager(threading.Thread):
         if now > self._next_feeler:
             self._next_feeler = now + _exponential_delay(_FEELER_INTERVAL)
             return _Outbound.FEELER
+        if (
+            full_relay
+            == self.max_outbound_full_relay
+            == _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS
+            and now > self._next_extra_network_peer
+            and self._maybe_pick_preferred_network()
+        ):
+            self._next_extra_network_peer = now + _exponential_delay(
+                _EXTRA_NETWORK_PEER_INTERVAL
+            )
+            return _Outbound.NETWORK
         return None
+
+    def _maybe_pick_preferred_network(self) -> bool:
+        """Pick a network no manual or full-relay peer is on, if there is one.
+
+        Core's `MaybePickPreferredNetwork`: the reachable networks in a
+        random order, the first with no `MANUAL` or `OUTBOUND_FULL_RELAY`
+        connection and an address in the table, which `holds_network`
+        answers as `addrman.Size(net) != 0` does. IPv4 and IPv6 are the
+        networks this node reaches, `_REACHABLE_NETWORKS`, here each with
+        its `CNetAddr::GetNetwork` name too, which the counts are keyed on.
+        """
+        counts = self.network_conn_counts()
+        networks = [
+            (BIP155Network.IPV4, Network.IPV4),
+            (BIP155Network.IPV6, Network.IPV6),
+        ]
+        secrets.SystemRandom().shuffle(networks)
+        for network_id, network in networks:
+            if not counts[network] and self.peer_db.holds_network(network_id):
+                self._preferred_network = network
+                return True
+        return False
+
+    def network_conn_counts(self) -> Counter[Network]:
+        """Core's `m_network_conn_counts`: the manual and full-relay peers.
+
+        Every `MANUAL` and `OUTBOUND_FULL_RELAY` connection held, pending
+        ones included, counted under `CNetAddr::GetNetwork`.
+        """
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        return Counter(
+            get_network(conn.address)
+            for conn in connected
+            if not (conn.inbound or conn.block_relay or conn.feeler)
+        )
 
     def _passed_over(
         self, address: NetworkAddressV2, tries: int, now: float, *, feeler: bool
@@ -1797,6 +1878,9 @@ class P2pManager(threading.Thread):
             _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
         )
         self._next_feeler = now + _exponential_delay(_FEELER_INTERVAL)
+        self._next_extra_network_peer = now + _exponential_delay(
+            _EXTRA_NETWORK_PEER_INTERVAL
+        )
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         loop.run_forever()
 

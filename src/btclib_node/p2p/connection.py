@@ -483,6 +483,12 @@ class Connection:
     # learn whether an address answers, dropped as soon as its `version`
     # has been read. Set and kept as `block_relay` is.
     feeler: bool = False
+    # Core's `m_last_block_announcement`: when this peer last sent a
+    # header new here and with more work than the active tip, which
+    # `callbacks.headers` sets and `DownloadManager` evicts the extra
+    # full-relay peer by. A class default for the reason `time_received`
+    # gives.
+    last_block_announcement: int = 0
     # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
     # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
     # address relay. Set where Core calls `SetupAddressRelay`: by
