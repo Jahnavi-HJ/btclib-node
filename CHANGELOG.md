@@ -611,6 +611,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   any entry is validated** (closes #1253); a script shorter than its declared
   length is an invalid serialization.
 
+### A `history.log` line is stamped as `debug.log` stamps it
+
+- **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
+  where it was local time with milliseconds and ` - `.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
