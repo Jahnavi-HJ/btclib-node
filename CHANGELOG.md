@@ -729,6 +729,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
   scope written and no part of the ban's key (closes #1220).
 
+### An old peer is sent Core's nonceless ping and its final alert
+
+- **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
+  and one at 70012 or below the final `alert`, as in Core** (closes #1204,
+  closes #1205).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
