@@ -599,6 +599,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   reindexes only where it pruned a row** (closes #1217, closes #1283), where
   each pass serialized every answered row and every dialable gossiped one.
 
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
