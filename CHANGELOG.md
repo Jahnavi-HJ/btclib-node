@@ -622,6 +622,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   replacements, ports of its own from 11000 to 25999, as Core's tests do**,
   not a port a bind to 0 picked, which anything could take first (closes #1340).
 
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
