@@ -638,6 +638,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `-connect` or `-addnode` dial counts as a recent try too, for an address
   a table holds** (closes #1277); as in Core, a restart forgets every try.
 
+### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
+
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
