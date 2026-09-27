@@ -15,6 +15,7 @@ own `promote_connection`, directly.
 
 import asyncio
 import errno
+import math
 import secrets
 import socket
 import threading
@@ -115,9 +116,9 @@ _REDIAL_MAX_SECONDS = 60.0
 # inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
 # `MAX_BLOCK_RELAY_ONLY_CONNECTIONS` and `MAX_FEELER_CONNECTIONS`
 # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node
-# dials no block-relay-only or feeler connection, and reserves their
-# slots all the same, so that a peer finds as many inbound slots here as
-# in a Core node given the same `-maxconnections`.
+# dials no feeler connection, and reserves its slot all the same, so
+# that a peer finds as many inbound slots here as in a Core node given
+# the same `-maxconnections`.
 _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
 _MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
 _MAX_FEELER_CONNECTIONS = 1
@@ -250,6 +251,11 @@ _BAD_PORTS = frozenset(
     }
 )
 
+# Core's `EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL` (`src/net.h`, same sha):
+# the mean of the exponential draw between two extra block-relay-only
+# peers, in seconds.
+_EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5 * 60
+
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
 # (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
@@ -261,6 +267,15 @@ _BAD_PORTS = frozenset(
 # generations of 25,000 holding two or three at a time, and this
 # forgets it once 50,000 other hosts have been discouraged since.
 _DISCOURAGED_CAPACITY = 50_000
+
+
+def _exponential_delay(mean: float) -> float:
+    """Core's `rand_exp_duration`: an exponential draw of mean `mean`.
+
+    Off `secrets`' generator, as every other draw a peer is meant not to
+    predict is in this tree.
+    """
+    return secrets.SystemRandom().expovariate(1 / mean)
 
 
 def _network_error_string(error: OSError) -> str:
@@ -332,10 +347,11 @@ class P2pManager(threading.Thread):
         # Core's own division of `-maxconnections`, `CConnman::Init`
         # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
         # slots above come off the top, capped by the total itself, and
-        # inbound peers get what is left. `max_outbound_full_relay` is
-        # Core's `m_max_outbound_full_relay`, the target
-        # `ThreadOpenConnections` dials full-relay peers up to, and
-        # `_maybe_dial_more_peers` is the one dial held to it:
+        # inbound peers get what is left. `max_outbound_full_relay` and
+        # `max_outbound_block_relay` are Core's `m_max_outbound_full_relay`
+        # and `m_max_outbound_block_relay`, the targets
+        # `ThreadOpenConnections` dials each kind up to, and
+        # `_maybe_dial_more_peers` is the one dial held to them:
         # `async_connect`, the `-connect`/`-addnode` route, reads no
         # bound, as Core's manual connections take no `semOutbound`
         # grant. Read once, for the same reason as the two fields above.
@@ -353,8 +369,15 @@ class P2pManager(threading.Thread):
         # a grant of before its fixed-seed step, whichever kind of
         # automatic connection it goes on to open. Every automatic
         # outbound connection counts against it, `_automatic_outbound`
-        # below being the one count of them.
+        # below being the one place they are gathered.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
+        self.max_outbound_block_relay = block_relay
+        # Core's `m_start_extra_block_relay_peers`, which
+        # `DownloadManager` sets from `Node`'s thread once the tip is
+        # close to the clock, and `_next_extra_block_relay`, the timer
+        # `run` draws before the first pass.
+        self.start_extra_block_relay_peers = False
+        self._next_extra_block_relay = math.inf
         # Core's `m_added_node_params` as `AddedNodesContain` reads it:
         # each `-addnode` value as given, compared with a drawn address's
         # text, and nothing at all past `_ADDED_NODES_BOUND` values.
@@ -562,13 +585,16 @@ class P2pManager(threading.Thread):
             ],
         ] = {}
 
-    def create_connection(
+    # One keyword per fact a connection starts with and keeps, none of
+    # them a knob of another, and every caller passes them by name.
+    def create_connection(  # noqa: PLR0913
         self,
         client: socket.socket,
         address: NetworkAddressV2,
         *,
         inbound: bool,
         automatic: bool = False,
+        block_relay: bool = False,
         prefer_evict: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -620,6 +646,7 @@ class P2pManager(threading.Thread):
             self, client, address, self.last_connection_id, inbound=inbound
         )
         conn.automatic = automatic
+        conn.block_relay = block_relay
         conn.prefer_evict = prefer_evict
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
@@ -927,21 +954,22 @@ class P2pManager(threading.Thread):
         self.add_fixed_seeds = False
         self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
 
-    def _automatic_outbound(self) -> int:
-        """Count the connections holding what Core's `semOutbound` grants.
+    def _automatic_outbound(self) -> list[Connection]:
+        """Return the connections holding what Core's `semOutbound` grants.
 
         This node's own automatic dials, pending ones included, and not
         inbound or manual peers. Locked for the reason
         `_maybe_dial_more_peers` gives.
         """
         with self._connections_lock:
-            return sum(
-                conn.automatic
+            return [
+                conn
                 for conn in (
                     *self.connections.values(),
                     *self.pending_connections.values(),
                 )
-            )
+                if conn.automatic
+            ]
 
     def _maybe_dump_banlist(self, now: float) -> None:
         if now - self._last_ban_dump < DUMP_BANS_INTERVAL:
@@ -957,7 +985,7 @@ class P2pManager(threading.Thread):
         # not pass through here.
         if not self.use_addrman_outgoing:
             return
-        # The target does not depend on how far this node has synced:
+        # The targets do not depend on how far this node has synced:
         # `ThreadOpenConnections` opens a full-relay connection whenever
         # `nOutboundFullRelay < m_max_outbound_full_relay`, from its first
         # pass on. Which peer headers are synced from, one at a time until
@@ -966,7 +994,7 @@ class P2pManager(threading.Thread):
         # choice, as it is `net_processing`'s in Core, not a cap on how
         # many peers are dialled.
         #
-        # Only this method's own dials count against the target, pending
+        # Only this method's own dials count against the targets, pending
         # ones included: `CConnman::ThreadOpenConnections` counts
         # `IsFullOutboundConn()` and `IsBlockOnlyConn()` peers in
         # `m_nodes`, handshake finished or not, and leaves inbound and
@@ -994,19 +1022,23 @@ class P2pManager(threading.Thread):
         # building `already_connected` -- which such a pass would only
         # throw away -- is not owed every 100 ms just because this
         # count is.
-        live = self._automatic_outbound()
-        if live >= self.max_automatic_outbound:
+        automatic = self._automatic_outbound()
+        block_relay = sum(conn.block_relay for conn in automatic)
+        if len(automatic) >= self.max_automatic_outbound:
             return
-        # Past the grant and ahead of the full-relay target, as Core
-        # takes a `semOutbound` grant and then adds fixed seeds before
-        # it counts full-relay peers, so a node holding all eight of
-        # them still seeds. Guarded as the draw below is:
-        # `add_addresses` writes to the store.
+        # Past the grant and ahead of the two targets, as Core takes a
+        # `semOutbound` grant and then adds fixed seeds before it counts
+        # peers of either kind, so a node holding all of them still
+        # seeds. Guarded as the draw below is: `add_addresses` writes to
+        # the store.
         try:
             self._maybe_add_fixed_seeds()
         except Exception:
             self.logger.exception("Exception occurred")
-        if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
+        dial_block_relay = self._next_block_relay(
+            len(automatic) - block_relay, block_relay
+        )
+        if dial_block_relay is None or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries the timestamp and services its rows were last
@@ -1037,17 +1069,24 @@ class P2pManager(threading.Thread):
             if not conn.inbound and can_addrv1(conn.address)
         }
         try:
-            await self._dial_one_draw(already_connected, outbound_net_groups)
+            await self._dial_one_draw(
+                already_connected, outbound_net_groups, block_relay=dial_block_relay
+            )
         except Exception:
             self.logger.exception("Exception occurred")
 
     async def _dial_one_draw(
-        self, already_connected: set[bytes], outbound_net_groups: set[bytes]
+        self,
+        already_connected: set[bytes],
+        outbound_net_groups: set[bytes],
+        *,
+        block_relay: bool,
     ) -> None:
         """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
 
-        Split out of `_maybe_dial_more_peers` for ruff's complexity
-        ceiling; that method's own `try` guards it.
+        A dial is block-relay-only where `block_relay` is set. Split out
+        of `_maybe_dial_more_peers` for ruff's complexity ceiling; that
+        method's own `try` guards it.
         """
         # A draw in the group of an outbound peer is followed by
         # another, up to `_MAX_DRAWS_PER_PASS`, as Core's loop
@@ -1086,8 +1125,39 @@ class P2pManager(threading.Thread):
                 sock = await dial(address)
                 self.peer_db.attempt(address)
                 if sock:
-                    self.create_connection(sock, address, inbound=False, automatic=True)
+                    self.create_connection(
+                        sock,
+                        address,
+                        inbound=False,
+                        automatic=True,
+                        block_relay=block_relay,
+                    )
             break
+
+    def _next_block_relay(self, full_relay: int, block_relay: int) -> bool | None:
+        """Whether the next automatic dial is block-relay-only, or `None`.
+
+        `None` is no dial this pass. The order is
+        `ThreadOpenConnections`'s own (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): full-relay up to its
+        target, then block-relay-only up to its own, then one more
+        block-relay-only peer each time the exponential timer comes due,
+        once `start_extra_block_relay_peers` is set -- the timer drawn
+        again when it is picked, whatever the draw from the table then
+        finds. `DownloadManager` drops the extra peer, or another, once
+        it is connected.
+        """
+        if full_relay < self.max_outbound_full_relay:
+            return False
+        if block_relay < self.max_outbound_block_relay:
+            return True
+        now = time.time()
+        if self.start_extra_block_relay_peers and now > self._next_extra_block_relay:
+            self._next_extra_block_relay = now + _exponential_delay(
+                _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
+            )
+            return True
+        return None
 
     def _passed_over(self, address: NetworkAddressV2, tries: int, now: float) -> bool:
         """Answer whether `ThreadOpenConnections` draws again past `address`.
@@ -1581,6 +1651,11 @@ class P2pManager(threading.Thread):
         now = time.time()
         for key in self._redial_next:
             self._redial_next[key] = now + _REDIAL_BASE_SECONDS
+        # Core's `start + rand_exp_duration(...)`, drawn as
+        # `ThreadOpenConnections` starts.
+        self._next_extra_block_relay = now + _exponential_delay(
+            _EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL
+        )
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         loop.run_forever()
 
