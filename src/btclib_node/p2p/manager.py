@@ -33,6 +33,7 @@ from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     RECENT_TRY_SECONDS,
     PeerDB,
+    can_connect,
     dial,
     endpoint_key,
     fixed_seed_addresses,
@@ -40,12 +41,19 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.anchors import (
+    ANCHORS_DATABASE_FILENAME,
+    MAX_BLOCK_RELAY_ONLY_ANCHORS,
+    dump_anchors,
+    read_anchors,
+)
 from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet
-from btclib_node.p2p.callbacks import _has_all_desirable_services
+from btclib_node.p2p.callbacks import has_all_desirable_services
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     is_local,
+    is_valid,
     keyed_net_group,
     net_class,
     net_group,
@@ -271,6 +279,8 @@ class _Outbound(enum.Enum):
     FULL_RELAY = enum.auto()
     BLOCK_RELAY = enum.auto()
     FEELER = enum.auto()
+    # a `BLOCK_RELAY` dial Core makes with its `anchor` flag set
+    ANCHOR = enum.auto()
 
 
 def _may_have_useful_address_db(address: NetworkAddressV2) -> bool:
@@ -397,14 +407,14 @@ class P2pManager(threading.Thread):
         # below being the one place they are gathered.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
         self.max_outbound_block_relay = block_relay
-        # Core's `m_start_extra_block_relay_peers`, which
-        # `DownloadManager` sets from `Node`'s thread once the tip is
-        # close to the clock, and `_next_extra_block_relay`, the timer
-        # `run` draws before the first pass.
-        self.start_extra_block_relay_peers = False
-        self._next_extra_block_relay = math.inf
-        # Core's `next_feeler`, drawn by `run` as the other timer is
-        self._next_feeler = math.inf
+        self._init_outbound_timers()
+        # Core's `m_anchors`, which `run` reads from `anchors.dat` and
+        # each anchor dial pops from the back, and its
+        # `fAddressesInitialized`, which `run` sets once past the bind
+        # and `stop` reads before dumping the anchors back.
+        self.anchors: list[NetworkAddressV2] = []
+        self._anchors_path = node.data_dir / ANCHORS_DATABASE_FILENAME
+        self._addresses_initialized = False
         # Core's `m_added_node_params` as `AddedNodesContain` reads it:
         # each `-addnode` value as given, compared with a drawn address's
         # text, and nothing at all past `_ADDED_NODES_BOUND` values.
@@ -611,6 +621,20 @@ class P2pManager(threading.Thread):
                 tuple[socket.socket, tuple[str, int] | tuple[str, int, int, int]]
             ],
         ] = {}
+
+    def _init_outbound_timers(self) -> None:
+        """Set the state `_next_outbound` reads, each timer not yet drawn.
+
+        Split out of `__init__` for ruff's statement ceiling.
+        """
+        # Core's `m_start_extra_block_relay_peers`, which
+        # `DownloadManager` sets from `Node`'s thread once the tip is
+        # close to the clock, and `_next_extra_block_relay`, the timer
+        # `run` draws before the first pass.
+        self.start_extra_block_relay_peers = False
+        self._next_extra_block_relay = math.inf
+        # Core's `next_feeler`, drawn by `run` as the other timer is
+        self._next_feeler = math.inf
 
     # One keyword per fact a connection starts with and keeps, none of
     # them a knob of another, and every caller passes them by name.
@@ -1066,7 +1090,9 @@ class P2pManager(threading.Thread):
         except Exception:
             self.logger.exception("Exception occurred")
         kind = self._next_outbound(len(automatic) - block_relay - feelers, block_relay)
-        if kind is None or self.peer_db.is_empty:
+        # an anchor is tried whatever the table holds, as Core tries it
+        # ahead of `addrman`
+        if kind is None or (kind is not _Outbound.ANCHOR and self.peer_db.is_empty):
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries the timestamp and services its rows were last
@@ -1107,20 +1133,90 @@ class P2pManager(threading.Thread):
         outbound_net_groups: set[bytes],
         kind: _Outbound,
     ) -> None:
-        """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
+        """Take an anchor or draw from the table, and dial at most once.
 
-        The dial is of `kind`. A feeler draws from the gossiped
-        addresses not in the answered table, which
-        `get_active_addresses` prunes by age
-        (btclib-org/btclib-node#1318), standing in for Core's
-        `Select(true, ...)` of the new table. It is held to no network
-        group, and wants only `MayHaveUsefulAddressDB` of what it draws.
-        Core's `SelectTriedCollision`, asked first, has nothing to
-        answer here, this table keeping no tried buckets to collide in.
+        The dial is of `kind`, an anchor's being block-relay-only.
         Split out of `_maybe_dial_more_peers` for ruff's complexity
         ceiling; that method's own `try` guards it.
         """
         feeler = kind is _Outbound.FEELER
+        address = None
+        if kind is _Outbound.ANCHOR:
+            address = self._pop_anchor(outbound_net_groups)
+        if address is None:
+            address = self._draw(outbound_net_groups, feeler=feeler)
+        if address is None:
+            return
+        if feeler:
+            # Core's "small amount of random noise before connection
+            # to avoid synchronization", ahead of the checks
+            # `OpenNetworkConnection` makes
+            await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
+        # `OpenNetworkConnection` (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
+        # dialling a peer already connected, discouraged or banned, a
+        # discouraged one being one this node dropped for cause
+        # (btclib-org/btclib-node#283).
+        if (
+            endpoint_key(address) in already_connected
+            or self.is_discouraged(address)
+            or self.ban_man.is_peer_banned(address)
+        ):
+            return
+        sock = await dial(address)
+        # an anchor's dial too, `ConnectNode` calling `Attempt` for each
+        self.peer_db.attempt(address)
+        if sock:
+            self.create_connection(
+                sock,
+                address,
+                inbound=False,
+                automatic=True,
+                block_relay=kind in {_Outbound.BLOCK_RELAY, _Outbound.ANCHOR},
+                feeler=feeler,
+            )
+
+    def _pop_anchor(self, outbound_net_groups: set[bytes]) -> NetworkAddressV2 | None:
+        """Pop an anchor off the back of `anchors`, `None` once none is left.
+
+        Passed over, as Core's loop `continue`s ahead of counting a try:
+        one this node cannot dial, one `CNetAddr::IsValid` refuses, one
+        short of the desirable services, and one in a network group an
+        outbound peer already holds. Core's `IsLocal` refusal has no
+        table of local addresses here to ask
+        (btclib-org/btclib-node#1238).
+        """
+        while self.anchors:
+            anchor = self.anchors.pop()
+            if (
+                can_connect(anchor)
+                and is_valid(network_address(anchor).ip)
+                and has_all_desirable_services(self.node, anchor.services)
+                and not (
+                    can_addrv1(anchor) and net_group(anchor) in outbound_net_groups
+                )
+            ):
+                endpoint = network_address(anchor)
+                self.logger.debug(
+                    "Trying to make an anchor connection to %s",
+                    ip_and_port(str(endpoint.ip), endpoint.port),
+                )
+                return anchor
+        return None
+
+    def _draw(
+        self, outbound_net_groups: set[bytes], *, feeler: bool
+    ) -> NetworkAddressV2 | None:
+        """Draw from the table up to `_MAX_DRAWS_PER_PASS` times.
+
+        A feeler draws from the gossiped addresses not in the answered
+        table, which `get_active_addresses` prunes by age
+        (btclib-org/btclib-node#1318), standing in for Core's
+        `Select(true, ...)` of the new table. It is held to no network
+        group, and wants only `MayHaveUsefulAddressDB` of what it draws.
+        Core's `SelectTriedCollision`, asked first, has nothing to answer
+        here, this table keeping no tried buckets to collide in.
+        """
         # A draw in the group of an outbound peer, or a feeler's draw of
         # an address with no useful address table, is followed by
         # another, up to `_MAX_DRAWS_PER_PASS`, as Core's loop
@@ -1139,7 +1235,7 @@ class P2pManager(threading.Thread):
             # do, and `manage_connections`'s sleep is what keeps that
             # from being a spin.
             if address is None:
-                break
+                return None
             if (
                 not feeler
                 and can_addrv1(address)
@@ -1148,44 +1244,17 @@ class P2pManager(threading.Thread):
                 continue
             if self._passed_over(address, tries, now, feeler=feeler):
                 continue
-            # Any other draw ends the pass, as Core's loop breaks
-            # with it and `OpenNetworkConnection` (`src/net.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
-            # without dialling a peer already connected, discouraged
-            # or banned, a discouraged one being one this node dropped
-            # for cause (btclib-org/btclib-node#283).
-            if feeler:
-                # Core's "small amount of random noise before connection
-                # to avoid synchronization", ahead of the checks
-                # `OpenNetworkConnection` makes
-                await asyncio.sleep(
-                    secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW)
-                )
-            held = endpoint_key(address) in already_connected
-            if (
-                not held
-                and not self.is_discouraged(address)
-                and not self.ban_man.is_peer_banned(address)
-            ):
-                sock = await dial(address)
-                self.peer_db.attempt(address)
-                if sock:
-                    self.create_connection(
-                        sock,
-                        address,
-                        inbound=False,
-                        automatic=True,
-                        block_relay=kind is _Outbound.BLOCK_RELAY,
-                        feeler=feeler,
-                    )
-            break
+            # any other draw ends the pass, as Core's loop breaks with it
+            return address
+        return None
 
     def _next_outbound(self, full_relay: int, block_relay: int) -> _Outbound | None:
         """Which automatic connection to open next, `None` for none.
 
         The order is `ThreadOpenConnections`'s own (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): full-relay up to its
-        target, then block-relay-only up to its own, then one more
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an anchor while one is
+        left and the block-relay-only target is unmet, then full-relay up
+        to its target, then block-relay-only up to its own, then one more
         block-relay-only peer each time its exponential timer comes due,
         once `start_extra_block_relay_peers` is set, then a feeler each
         time its own timer does. A timer is drawn again when it is
@@ -1194,6 +1263,8 @@ class P2pManager(threading.Thread):
         connected, and `callbacks.version` a feeler as soon as it has
         answered.
         """
+        if self.anchors and block_relay < self.max_outbound_block_relay:
+            return _Outbound.ANCHOR
         if full_relay < self.max_outbound_full_relay:
             return _Outbound.FULL_RELAY
         if block_relay < self.max_outbound_block_relay:
@@ -1231,7 +1302,7 @@ class P2pManager(threading.Thread):
         if feeler:
             if not _may_have_useful_address_db(address):
                 return True
-        elif not _has_all_desirable_services(self.node, address.services):
+        elif not has_all_desirable_services(self.node, address.services):
             return True
         # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
         if tries < _BAD_PORT_DRAWS and address.port in _BAD_PORTS:
@@ -1688,6 +1759,18 @@ class P2pManager(threading.Thread):
             return
         finally:
             self._start_attempted.set()
+        # `CConnman::Start`'s own order: past the bind, before any
+        # connection is opened
+        if self.use_addrman_outgoing:
+            self.anchors = read_anchors(
+                self._anchors_path, self.node.chain.magic, self.logger.info
+            )
+            del self.anchors[MAX_BLOCK_RELAY_ONLY_ANCHORS:]
+            self.logger.info(
+                "%i block-relay-only anchors will be tried for connections.",
+                len(self.anchors),
+            )
+        self._addresses_initialized = True
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
@@ -1732,6 +1815,7 @@ class P2pManager(threading.Thread):
         # on a thread that was never started raises.
         if self.is_alive():
             self.join()
+        self._dump_anchors()
         # `stop_handle.cancel()` is what makes every `run_until_complete`
         # below safe, on any loop this method could possibly be handed --
         # not one more guard clause alongside `self.ident` and `pending`,
@@ -1869,6 +1953,34 @@ class P2pManager(threading.Thread):
         # closed here is not one anything should wait for
         self.listening.clear()
         self.logger.info("Stopping P2P Manager")
+
+    def _dump_anchors(self) -> None:
+        """Write the block-relay-only peers held at shutdown to `anchors.dat`.
+
+        Core's `StopNodes`, once `Start` got past its bind and under no
+        `-connect`: `GetCurrentBlockRelayOnlyConns` takes every
+        block-relay-only connection in `m_nodes`, pending ones included,
+        in the order they were opened, and the first two are kept. The
+        address is the one dialled, as `CNode::addr` is. A write that
+        fails is logged, as `SerializeFileDB` logs it, and stops nothing.
+        """
+        if not (self._addresses_initialized and self.use_addrman_outgoing):
+            return
+        self._addresses_initialized = False
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        anchors = [
+            conn.address
+            for conn in sorted(connected, key=lambda conn: conn.id)
+            if conn.block_relay
+        ][:MAX_BLOCK_RELAY_ONLY_ANCHORS]
+        try:
+            dump_anchors(self._anchors_path, self.node.chain.magic, anchors)
+        except OSError:
+            self.logger.exception("Failed to write %s", ANCHORS_DATABASE_FILENAME)
 
     def send(self, msg: Payload, connection_id: int) -> None:
         """Send `msg` on `connection_id`, a no-op if that connection is gone."""

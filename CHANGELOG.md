@@ -671,6 +671,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   gossiped address not in the answered table** (closes #1096), as Core's
   `FEELER`: asked for addresses, recorded as answered, then dropped.
 
+### Two block-relay-only peers are kept across a restart, as in Core
+
+- **The block-relay-only peers held at shutdown are written to `anchors.dat`
+  and dialled first at the next start** (closes #1097), two at most, in the
+  file format bitcoind v31.1.0 reads and writes.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

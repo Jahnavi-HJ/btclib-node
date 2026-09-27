@@ -143,6 +143,7 @@ __all__ = [
     "getdata",
     "getheaders",
     "handshake_callbacks",
+    "has_all_desirable_services",
     "headers",
     "inv",
     "maybe_send_getheaders",
@@ -278,7 +279,7 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
         raise MisbehavingError(err_msg)
 
 
-def _has_all_desirable_services(node: Node, services: int) -> bool:
+def has_all_desirable_services(node: Node, services: int) -> bool:
     """Core's `HasAllDesirableServiceFlags`, argued in `version` below."""
     desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
     if (
@@ -386,7 +387,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # `_maybe_dial_more_peers` dials, but a feeler, and not a `-connect`
     # or `-addnode` peer (btclib-org/btclib-node#725).
     #
-    # `_has_all_desirable_services`' own `desirable` (above) is
+    # `has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
     # (`net_processing.cpp:1861-1869`): `NODE_NETWORK | NODE_WITNESS`
     # ordinarily, or `NODE_NETWORK_LIMITED | NODE_WITNESS` -- satisfied
@@ -413,7 +414,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # The same answer is what Core records as `m_has_all_wanted_services`
     # for every connection, inbound included, and reads when choosing an
     # inbound peer to evict.
-    conn.has_all_wanted_services = _has_all_desirable_services(
+    conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
     if (
