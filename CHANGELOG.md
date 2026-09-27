@@ -746,6 +746,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Its comments name `skip-reason-prefix`, left empty, in place of
   `exclude-classname`** (issue btclib-org/.github#1419).
 
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
