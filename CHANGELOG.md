@@ -879,6 +879,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   order Core checks them** (closes #1328); a failing script's message inside
   the parentheses is btclib's (issue #1362).
 
+### The dialler and the suite stop assuming a host has IPv6, or is not root
+
+- **`dial` answers `None` where the socket layer refuses the family**
+  (closes #1249). A test needing IPv6 skips rather than fails the suite
+  (closes #1250); the root-skipped one carries its pragma (closes #1251).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
