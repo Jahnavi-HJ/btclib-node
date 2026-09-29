@@ -949,6 +949,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Failing scripts answer `block-script-verify-flag-failed`** (closes #1390).
 - **A body failing `CheckBlock` leaves no header indexed** (closes #1339).
 
+### `address_sampler`'s tried side draws an aged-out row, as `Select_` does
+
+- **The tried side reads `active_addresses` unfiltered by `_aged_out`,
+  matching Core's `Select_`** (closes #1434), where an aged-out answered
+  endpoint was never drawn again.
+
+### `_aged_out` grants `IsTerrible`'s one-minute grace to a row just tried
+
+- **A row tried within the last minute is never aged out, whatever its
+  timestamp says** (closes #1435), matching `IsTerrible`'s own `m_last_try`
+  guard.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
