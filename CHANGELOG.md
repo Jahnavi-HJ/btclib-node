@@ -908,6 +908,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`headers` asks the announcing peer for the blocks up to a header it just
   sent, as Core's `HeadersDirectFetchBlocks` does** (closes #1199).
 
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap
+
+- **`-dnsseed` and `-fixedseeds` turn DNS seeding and the chain's fixed
+  seeds off, and `-seednode` addr-fetches a peer ahead of the DNS seeds,
+  one at a time** (closes #1192), as Core's `ThreadOpenConnections` does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
