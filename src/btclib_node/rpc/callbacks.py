@@ -46,7 +46,7 @@ from btclib_node.main import (
     update_chain,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.connection import local_services
 from btclib_node.p2p.eviction import Network, is_valid, net_class
@@ -1321,56 +1321,25 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 
 
 # Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
-# persistent added-node list, which this node has no counterpart to --
-# `Config.addnode`, its own equivalent of `-addnode`, is a tuple
-# resolved once at startup (`config.py`'s `_resolve_peers`) and dialled
-# through `P2pManager`'s own redial set, never grown or shrunk at
-# runtime. `connect_nodes`, the one caller this node's own tf2 census
-# names for this method (`test_framework.py:568-594`, same sha), only
-# ever calls `onetry`, which is the one command below with a real
-# effect: it schedules the identical one-shot dial `onetry` gets in
-# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
-# dedup). `add` is accepted and scheduled the same way rather than
-# raising, since refusing an otherwise-valid command would be less
-# faithful to Core than dialling once and not persisting; `remove`
-# answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being
-# no added-node list here for it to find an entry in.
+# bitcoin/bitcoin@bb529657): `add`/`remove` reach `P2pManager`'s own
+# `add_added_peer`/`remove_added_peer`, its counterpart to `CConnman`'s
+# `AddNode`/`RemoveAddedNode`, and `_open_added_peers`
+# (`p2p/manager.py`) is what actually dials whatever the list holds,
+# never this function (btclib-org/btclib-node#1350). `onetry` schedules
+# the identical one-shot dial Core's `OpenNetworkConnection` does
+# (`conn_type=MANUAL`, no persistence, no dedup) -- the one command
+# `connect_nodes`, the one caller this node's own tf2 census names for
+# this method (`test_framework.py:568-594`, same sha), ever calls.
 _ADDNODE_COMMANDS = ("add", "remove", "onetry")
 
 
-def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
-    """Answer `addnode`, `onetry` for real and the other two commands honestly.
+def _parsed_addnode_args(params: list[Any]) -> tuple[str, str]:
+    """Return `addnode`'s own `(node, command)`, or raise as Core's parser does.
 
-    The module-level comment above argues the three commands; this
-    function is Core's own argument parsing and its two literal error
-    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
-    empty-`node` refusal is master's own fix
-    (`rpc: reject empty node argument in addnode`,
-    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
-    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
-    `integration-bitcoind.yml` pins, answers an empty `node` with a
-    silent, do-nothing success instead, measured directly against a
-    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
-    commit and is confirmed on `bb529657`'s own ancestry via
-    `git merge-base --is-ancestor`.
-
-    Matching master here rather than the release this tree tests
-    against is a decision, not an oversight: `CLAUDE.md`'s own
-    *Following Bitcoin Core* names matching Core's behaviour as the
-    default, and reserves a release-pinned citation for a claim about
-    the behaviour of the bitcoind this tree is tested against rather
-    than for what this node implements. Master's own code comment names
-    why the fix exists -- "Such a node would never resolve, but would
-    be retried indefinitely" -- and nothing under `tests/integration/`
-    drives `addnode ""`, so this tree's own integration suite, run
-    against v31.1, never exercises the one call shape the two
-    disagree on. Matching the release instead would mean knowingly
-    carrying a defect Core itself already fixed, only to undo that the
-    moment the pin advances past it -- issue #1010 is closed on this
-    reasoning. `v2transport` is read and type-checked, matching Core's
-    own optional third argument, and otherwise unused: BIP324 is not a
-    transport this node speaks yet.
+    Split out of `add_node` below so that function's own three-command
+    dispatch stays under `ruff`'s complexity floor; the checks
+    themselves are unchanged (`rpc/net.cpp:365-377`, at
+    bitcoin/bitcoin@bb529657).
     """
     if len(params) < 2:  # noqa: PLR2004
         raise RpcError(RPCErrorCode.MISC_ERROR, HELP_TEXT["addnode"])
@@ -1403,24 +1372,68 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
+    return node_arg, command
+
+
+def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `addnode`'s three commands for real, each against Core's own list.
+
+    The module-level comment above argues the three commands; this
+    function is Core's own argument parsing and its two literal error
+    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
+    empty-`node` refusal is master's own fix
+    (`rpc: reject empty node argument in addnode`,
+    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
+    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+    `integration-bitcoind.yml` pins, answers an empty `node` with a
+    silent, do-nothing success instead, measured directly against a
+    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
+    commit and is confirmed on `bb529657`'s own ancestry via
+    `git merge-base --is-ancestor`.
+
+    Matching master here rather than the release this tree tests
+    against is a decision, not an oversight: `CLAUDE.md`'s own
+    *Following Bitcoin Core* names matching Core's behaviour as the
+    default, and reserves a release-pinned citation for a claim about
+    the behaviour of the bitcoind this tree is tested against rather
+    than for what this node implements. Master's own code comment names
+    why the fix exists -- "Such a node would never resolve, but would
+    be retried indefinitely" -- and nothing under `tests/integration/`
+    drives `addnode ""`, so this tree's own integration suite, run
+    against v31.1, never exercises the one call shape the two
+    disagree on. Matching the release instead would mean knowingly
+    carrying a defect Core itself already fixed, only to undo that the
+    moment the pin advances past it -- issue #1010 is closed on this
+    reasoning. `v2transport` is read and type-checked, matching Core's
+    own optional third argument, and otherwise unused: BIP324 is not a
+    transport this node speaks yet.
+    """
+    node_arg, command = _parsed_addnode_args(params)
+
+    if command == "add":
+        if not node.p2p_manager.add_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: Node already added"
+            )
+        return
 
     if command == "remove":
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_NOT_ADDED,
-            "Error: Node could not be removed. It has not been added previously.",
-        )
+        if not node.p2p_manager.remove_added_peer(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_NOT_ADDED,
+                "Error: Node could not be removed. It has not been added previously.",
+            )
+        return
 
     try:
         host, port = split_host_port(node_arg, node.chain.port)
-        address = peer_address(host, port)
     except ValueError as error:
-        # a hostname, or a malformed port: `_resolve_peers` (config.py)
-        # refuses `-addnode`'s own spec the identical way and for the
-        # identical reason -- this node's synchronous RPC path resolves
-        # no DNS
+        # a malformed port alone: a hostname is no longer refused here,
+        # `connect_host` resolving one the way `P2pManager`'s own
+        # redial and `Node.run`'s startup dial do (btclib-org/btclib-node#1264)
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect(address)
+    node.p2p_manager.connect_host(host, port)
 
 
 # `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON

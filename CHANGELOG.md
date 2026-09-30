@@ -1114,6 +1114,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   valid headers ahead of it, matching Core's two-stage
   `CheckHeadersPoW` then `AcceptBlockHeader`** (closes #1348).
 
+### `-connect`, `-addnode` and `-seednode` take a hostname
+
+- **A hostname given to `-connect`, `-addnode`, `-seednode` or the
+  `addnode` RPC is resolved at dial time, not refused at startup**
+  (closes #1264), as Core's `ConnectNode` resolves a `pszDest`.
+
+### `-connect` and `-addnode` are each dialled by a loop of their own
+
+- **A `-connect` or `-addnode` peer not held is redialled by a standing
+  loop of its own, on Core's own cadence, in place of one shared,
+  capped, doubling backoff** (closes #1316).
+
+### The `addnode` RPC's `add` and `remove` grow and shrink the `-addnode` list
+
+- **`add` and `remove` now mutate the list `-addnode`'s own dial loop
+  reads, as Core's `AddNode`/`RemoveAddedNode` do, in place of `add`
+  dialling once unpersisted and `remove` always refusing** (closes #1350).
+
+### An addr-fetch dial no longer holds up pruning
+
+- **The addr-fetch queue is now dialled by a standing loop of its own,
+  off `manage_connections`'s own step, so a slow resolve or connect no
+  longer delays that loop's pruning and eviction** (closes #1366).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
