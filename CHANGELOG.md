@@ -1192,6 +1192,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   milliseconds**, as Core's own `stop <ms>` does, while the node starts
   shutting down at once (closes #1467).
 
+### `cli_test.py`'s `datadir` log-line tests compare against the escaped form
+
+- **Three tests build the expected `datadir=` line through
+  `_setting_to_write_str`, or a hand-written literal, matching Core's own
+  `json_escape`**, which doubles a backslash (closes #1509).
+
 ### The OpenSSF Baseline badge
 
 - **`README.md`'s badge row ends with the OpenSSF Baseline badge**,
