@@ -1102,6 +1102,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`getmempoolinfo` answers `unbroadcastcount`** (closes #1421).
 - **`getmempoolentry` is served** (closes #1397).
 
+### A signet block needs a real BIP325 solution
+
+- **A signet block without a valid solution for the chain's own
+  challenge is refused, `bad-signet-blksig`, as Core's
+  `CheckSignetBlockSolution` refuses it** (closes #1342).
+
+### A headers batch indexes its valid prefix through a contextual failure
+
+- **A header failing only its contextual check no longer discards the
+  valid headers ahead of it, matching Core's two-stage
+  `CheckHeadersPoW` then `AcceptBlockHeader`** (closes #1348).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
