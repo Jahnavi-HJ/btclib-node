@@ -1186,6 +1186,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   the connection, so a test now waits on the store itself rather than
   racing it by polling the id alone** (closes #1504).
 
+### `stop`'s hidden `wait` argument is honoured
+
+- **A `stop` call carrying `wait` delays its own reply by that many
+  milliseconds**, as Core's own `stop <ms>` does, while the node starts
+  shutting down at once (closes #1467).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
