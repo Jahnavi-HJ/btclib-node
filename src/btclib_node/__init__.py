@@ -151,9 +151,15 @@ def _default_worker_count() -> int:
     (btclib-org/btclib-node#388).
     """
     xdist_workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
-    if xdist_workers is None:
-        return 8
-    return max(1, (os.cpu_count() or 8) // int(xdist_workers))
+    if xdist_workers is not None:
+        try:
+            count=int(xdist_workers)
+            if count>0:
+                return max(1,(os.cpu_count() or 8)//count)
+        except ValueError:
+            pass #Fall back to default if non-integer or invalid input
+    return 8
+
 
 
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute

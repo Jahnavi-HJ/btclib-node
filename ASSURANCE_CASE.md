@@ -131,6 +131,10 @@ Nor is the interpreter, the operating system, or the RocksDB build this
 node runs on: an application shares its process with all three and has
 no defence against them.
 
+**Environment variables.**
+
+- `PYTEST_XDIST_WORKER_COUNT`: Optional test environment variable used to compute default worker pool sizing in `src/btclib_node/__init__.py`.
+
 ## Trust boundaries
 
 **The caller and the RPC surface.** `src/btclib_node/rpc/` is where a
