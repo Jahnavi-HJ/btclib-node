@@ -131,10 +131,6 @@ Nor is the interpreter, the operating system, or the RocksDB build this
 node runs on: an application shares its process with all three and has
 no defence against them.
 
-**Environment variables.**
-
-- `PYTEST_XDIST_WORKER_COUNT`: Optional test environment variable used to compute default worker pool sizing in `src/btclib_node/__init__.py`.
-
 ## Trust boundaries
 
 **The caller and the RPC surface.** `src/btclib_node/rpc/` is where a
@@ -193,6 +189,11 @@ are the operator's own input, not a remote party's — `cli.py`'s own
 module docstring is where each flag is named against Bitcoin Core's
 equivalent. Nothing under `src/` opens a file the operator did not name,
 directly or through the datadir.
+
+`PYTEST_XDIST_WORKER_COUNT` is read in any process, not only under
+pytest: `_default_worker_count` in `src/btclib_node/__init__.py` sizes
+`Node.worker_pool` from it, and takes eight where it is not a positive
+integer.
 
 **Bitcoin Core, as an oracle rather than a dependency.**
 `.github/workflows/integration-bitcoind.yml` is the one place this
