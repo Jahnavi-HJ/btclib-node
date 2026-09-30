@@ -1231,6 +1231,83 @@ def test_the_dnsseed_soft_set_reads_maxconnections_before_the_int(
     assert _build(tmp_path, f"-maxconnections={value}").dnsseed is dnsseed
 
 
+def test_forcednsseed_defaults_to_false(tmp_path: Path) -> None:
+    """`DEFAULT_FORCEDNSSEED` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7)."""
+    assert _build(tmp_path).forcednsseed is False
+
+
+def test_forcednsseed_is_read(tmp_path: Path) -> None:
+    """ISS 1265: `-forcednsseed=1` no longer "Invalid parameter"."""
+    assert _build(tmp_path, "-forcednsseed=1").forcednsseed is True
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("-forcednsseed=1", "-connect=1.2.3.4"), ("-forcednsseed=1", "-maxconnections=0")],
+    ids=["-connect", "-maxconnections=0"],
+)
+def test_forcednsseed_is_refused_alongside_the_dnsseed_soft_set_off(
+    tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    """ISS 1265: refused as `bitcoind` v31.1.0 refuses it, its own wording.
+
+    Measured there with `-forcednsseed=1 -dnsseed=0`: exit 1,
+    "Error: Cannot set -forcednsseed to true when setting -dnsseed to
+    false." No explicit `-dnsseed` is given here, so it is the soft-set
+    that turns it off -- `-connect` or `-maxconnections=0`
+    (btclib-org/btclib-node#1192's own `-dnsseed`); an explicit
+    `-dnsseed=1` instead is the test below this one.
+    """
+    expected = re.escape(
+        "Cannot set -forcednsseed to true when setting -dnsseed to false."
+    )
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-dnsseed=1", "-forcednsseed=1", "-connect=1.2.3.4"),
+        ("-dnsseed=1", "-forcednsseed=1", "-maxconnections=0"),
+    ],
+    ids=["-connect", "-maxconnections=0"],
+)
+def test_an_explicit_dnsseed_true_wins_over_the_soft_set(
+    tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    """ISS 1265, review round 3: `-dnsseed=1` wins over the soft-set-off.
+
+    `InitParameterInteraction`'s `SoftSetBoolArg` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    whichever condition would otherwise have turned `-dnsseed` off.
+    This reaches `_before_lock`'s own early `Config(...)` call: a
+    version reading the raw soft-set alone, ignoring the explicit
+    value, refused this combination in error.
+    """
+    built = _build(tmp_path, *argv)
+    assert built.dnsseed is True
+    assert built.forcednsseed is True
+
+
+def test_forcednsseed_refusal_precedes_the_maxconnections_refusal(
+    tmp_path: Path,
+) -> None:
+    """ISS 1265: `AppInitParameterInteraction`'s own order (same sha).
+
+    `-maxconnections=-1` alone raises its own message
+    (`test_maxconnections_is_the_int_bitcoind_reads` above) -- it is
+    also what turns the `-dnsseed` soft-set off here, `-1 > 0` being
+    false, so paired with `-forcednsseed=1` the `-forcednsseed` refusal
+    is the one that surfaces, Core checking it first.
+    """
+    expected = re.escape(
+        "Cannot set -forcednsseed to true when setting -dnsseed to false."
+    )
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-forcednsseed=1", "-maxconnections=-1")
+
+
 # measured on `bitcoind` v31.1.0 with `-regtest -listen=0`:
 # `getblockchaininfo`'s `pruned` and `prune_target_size`, the target in
 # MiB here, and `None` for a start it refuses as below the minimum

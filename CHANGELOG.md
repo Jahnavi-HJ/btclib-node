@@ -1028,6 +1028,18 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   way, as Core's `Discover` runs off whether it would bind every interface
   rather than off `-listen`** (closes #1330).
 
+### DNS seeding waits, batches by three, and reads `-forcednsseed`
+
+- **A wait, then three seeds at a time, ends early at two full-relay
+  peers** (closes #1265); **`-forcednsseed` asks every seed at once**,
+  refused with `-dnsseed` off, both as in `bitcoind`.
+
+### `-seednode` gets thirty seconds before the DNS seeds are asked
+
+- **DNS seeding waits for two full-relay peers or thirty seconds,
+  whichever is first, wherever `-seednode` is given** (closes #1461),
+  as Core's `ThreadDNSAddressSeed` does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

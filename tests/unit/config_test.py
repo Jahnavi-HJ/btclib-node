@@ -385,6 +385,57 @@ def test_max_connections_negative_raises() -> None:
         Config(chain="regtest", max_connections=-1)
 
 
+def test_forcednsseed_defaults_to_false() -> None:
+    """Core's own `DEFAULT_FORCEDNSSEED`, at bitcoin/bitcoin@9be056a8a7."""
+    assert Config(chain="regtest").forcednsseed is False
+
+
+def test_forcednsseed_true_alongside_dnsseed_is_stored_back() -> None:
+    """`-forcednsseed` alongside a `-dnsseed` that is on: no refusal."""
+    config = Config(chain="regtest", dnsseed=True, forcednsseed=True)
+    assert config.forcednsseed is True
+    assert config.dnsseed is True
+
+
+def test_forcednsseed_true_alongside_dnsseed_false_raises() -> None:
+    """ISS 1265: Core's own wording (`AppInitParameterInteraction`)."""
+    with pytest.raises(
+        ValueError,
+        match=r"^Cannot set -forcednsseed to true when setting -dnsseed to false\.$",
+    ):
+        Config(chain="regtest", dnsseed=False, forcednsseed=True)
+
+
+def test_forcednsseed_true_alongside_the_dnsseed_soft_set_off_raises() -> None:
+    """The refusal reaches the soft-set too, `dnsseed` left at `None`.
+
+    `-connect` alone turns the soft-set off (`Config.dnsseed`'s own
+    docstring), with no explicit `-dnsseed` needed to trigger it.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"^Cannot set -forcednsseed to true when setting -dnsseed to false\.$",
+    ):
+        Config(chain="regtest", connect=["1.2.3.4"], forcednsseed=True)
+
+
+def test_an_explicit_dnsseed_true_wins_over_connects_soft_set_off() -> None:
+    """`-dnsseed=1 -forcednsseed=1 -connect=x`: no refusal, both on.
+
+    `InitParameterInteraction`'s own `SoftSetBoolArg` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7) never overwrites an arg already set,
+    so `-connect`'s soft-set-off of `-dnsseed` never reaches an explicit
+    `-dnsseed=1` -- `AppInitParameterInteraction`'s own forcednsseed
+    check (same sha) then reads that explicit `True` back, past
+    btclib-org/btclib-node#1192's own `-dnsseed` soft-set order.
+    """
+    config = Config(
+        chain="regtest", dnsseed=True, forcednsseed=True, connect=["1.2.3.4"]
+    )
+    assert config.dnsseed is True
+    assert config.forcednsseed is True
+
+
 def test_rpcauth_is_parsed_into_rpc_auth() -> None:
     """Each `-rpcauth` value becomes one `RpcAuthEntry`, none by default."""
     assert Config(chain="regtest").rpc_auth == ()
