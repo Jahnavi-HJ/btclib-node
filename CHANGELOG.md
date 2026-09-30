@@ -1064,6 +1064,34 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   re-export (btclib-org/btclib#2404); `test` gains `btclib-ecc` and a
   raised `btclib-secp256k1` floor for its bindings import** (closes #1431).
 
+### `gettxoutsetinfo` defaults to `muhash`, not Core's `hash_serialized_3`
+
+- **A bare `gettxoutsetinfo` answers `muhash`**, the one hash type this
+  tree keeps running, rather than refusing outright on Core's own
+  default (closes #1387).
+
+### `gettxout` answers an outpoint's own unspent coin, or null
+
+- **`gettxout` reads the confirmed UTXO set, `include_mempool`'s mempool
+  overlay included, and answers Core's own shape** (closes #1388).
+
+### `getchaintips` answers every known tip, each with its status
+
+- **`getchaintips` answers every header this node has seen with no child
+  building on it, plus the active tip, each with its height, branch
+  length and Core's own status vocabulary** (closes #1393).
+
+### `getblock` answers its own default verbosity, and verbosity 2
+
+- **`getblock` answers verbosity 1 and 2 in Core's own shape**, refusing
+  only verbosity 3, which needs this node's own undo data threaded
+  through and is left to issue #1446 (closes #1428).
+
+### RPC hash arguments refuse the wrong length, Core's own `ParseHashV` check
+
+- **A hex `txid` or `blockhash` of the wrong length is refused**, rather
+  than silently decoding to a hash nothing then finds (closes #1457).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
