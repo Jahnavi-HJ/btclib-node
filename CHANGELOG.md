@@ -1240,6 +1240,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `install_published_release.py`, which retries only while the installer says
   the pin is not resolvable** (issue btclib-org/.github#1458).
 
+### Core citations keep `at` on the same line as the sha they cite
+
+- **Every `#` Core citation outside `p2p/callbacks.py`'s `headers()`
+  carries `at` on the sha's own line** (closes #1517).
+- **So does `block()`'s btclib citation** (closes #1528).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
