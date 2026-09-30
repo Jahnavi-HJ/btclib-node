@@ -329,11 +329,18 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
-    # what Core logs of its settings: the warnings it buffers while
-    # reading them, then the unrecognised-section warning, which it logs
-    # after its version line (a line history.log does not have, #1309).
-    # `Node` logs them in that order once its own log is open
+    # the warnings Core buffers while it reads its settings, in order;
+    # `open_history_log` logs each once its own log is open, ahead of
+    # its version line
     log_warnings: tuple[str, ...]
+    # `AppInitParameterInteraction`'s one warning about a section naming
+    # no chain (`cli._warn_unrecognized_sections`), logged after the
+    # version line; `""` where no section is unrecognised
+    section_warning: str
+    # `ArgsManager::LogArgs`'s own lines (`cli._log_args`): the config
+    # file's args, then the command line's, logged after
+    # `section_warning`
+    config_args: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (host, port) pairs, split by `_split_peers` above, host unresolved:
     # Core's own `-connect`, which dials these alone and turns off DNS
@@ -501,6 +508,8 @@ class Config:
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
         log_warnings: Sequence[str] = (),
+        section_warning: str = "",
+        config_args: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -613,4 +622,6 @@ class Config:
         self.debug = debug
         self.log_path = log_path
         self.log_warnings = tuple(log_warnings)
+        self.section_warning = section_warning
+        self.config_args = tuple(config_args)
         self.min_relay_feerate = min_relay_feerate
