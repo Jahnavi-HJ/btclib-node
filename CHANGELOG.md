@@ -1092,6 +1092,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A hex `txid` or `blockhash` of the wrong length is refused**, rather
   than silently decoding to a hash nothing then finds (closes #1457).
 
+### `testmempoolaccept` and `sendrawtransaction` follow Core's `rpc/mempool.cpp`
+
+- **Both apply `maxfeerate` and `maxburnamount`** (closes #1371).
+- **A confirmed resubmission answers `-27`, not `-25`** (closes #1373).
+
+### `getmempoolinfo` and `getmempoolentry` answer as Core's do
+
+- **`getmempoolinfo` answers `unbroadcastcount`** (closes #1421).
+- **`getmempoolentry` is served** (closes #1397).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
