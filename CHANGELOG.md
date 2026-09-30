@@ -1270,6 +1270,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `btclib-org/.github`,** which reads the jobs listing again up to a
   deadline (issue btclib-org/.github#1463).
 
+### An RPC request queued when shutdown starts is answered, not closed
+
+- **`Node.run` drains what was already queued before either manager
+  stops** (closes #1506).
+- **A request after that drain begins gets `503` instead** (closes #1515).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

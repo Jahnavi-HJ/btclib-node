@@ -221,6 +221,26 @@ class RpcManager(threading.Thread):
         # set by `run` once it has either set `listening` or given up on
         # it, which is what `start_listener` waits on
         self._start_attempted = threading.Event()
+        # Set by `interrupt`, read by every `RpcConnection.run` on this
+        # manager's own loop: Core's `ThreadPool`'s own `m_interrupt`,
+        # set by `InterruptHTTPServer`'s call to
+        # `g_threadpool_http.Interrupt()` ahead of `StopHTTPServer`'s own
+        # `Stop()` (`src/httpserver.cpp`, `src/util/threadpool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A `threading.Event`
+        # rather than a plain attribute for the same reason `listening`
+        # and `ever_listened` are: it is written on `Node`'s thread and
+        # read on this manager's own. `stop` also sets it,
+        # unconditionally, as `ThreadPool::Stop` sets `m_interrupt`
+        # itself too rather than relying on `Interrupt` having already
+        # been called (btclib-org/btclib-node#1515).
+        self.interrupted = threading.Event()
+        # Held to set `interrupted`, and by `RpcConnection.run` from
+        # reading it to queuing onto `messages`: `ThreadPool`'s own
+        # `m_mutex`, which guards `m_interrupt` and `m_work_queue`
+        # together (same file, same tag), so a request is either on
+        # `messages` before `interrupt` returns or refused
+        # (btclib-org/btclib-node#1515).
+        self.queue_lock = threading.Lock()
         # What `run` binds and `stop` closes. `server`'s own
         # `ExitStack` ordinarily closes these once `stop`'s
         # cancellation reaches that task -- except where `stop` arrives
@@ -260,10 +280,32 @@ class RpcManager(threading.Thread):
         self._latest_reply_deadline: float | None = None
         self._reply_deadline_lock = threading.Lock()
 
+    def extend_reply_deadline(self, deadline: float) -> None:
+        """Push `latest_reply_deadline` to `deadline`, never back.
+
+        Called by `add_delayed_reply` below, and by
+        `Node._drain_rpc_queue` once per request it answers: each such
+        request is progress exactly as a delayed `stop` reply's own
+        countdown is, and `Node.stop`'s wait loop reads
+        `latest_reply_deadline` without caring which of the two moved it.
+        `deadline` is the caller's own `time.monotonic()` reading, taken
+        on its own thread rather than this method's, so that a caller
+        answering several requests in a row times each push at the
+        moment that request actually finished.
+        """
+        with self._reply_deadline_lock:
+            latest = self._latest_reply_deadline
+            if latest is None or deadline > latest:
+                self._latest_reply_deadline = deadline
+
     def add_delayed_reply(
         self, reply: Coroutine[Any, Any, None], deadline: float
     ) -> None:
-        """Record `reply`, due at the `time.monotonic()` value `deadline`.
+        """Record `reply`, written by the `time.monotonic()` value `deadline`.
+
+        `reply` is a `stop` RPC's delayed reply
+        (btclib-org/btclib-node#1467) or one `RpcConnection.send` writes
+        once shutdown has begun (btclib-org/btclib-node#1506).
 
         Called on `Node`'s thread before `reply` is handed to this
         manager's loop, never from inside it: a task recording itself on
@@ -272,10 +314,7 @@ class RpcManager(threading.Thread):
         then cancelled with the rest.
         """
         self.delayed_replies.add(reply)
-        with self._reply_deadline_lock:
-            latest = self._latest_reply_deadline
-            if latest is None or deadline > latest:
-                self._latest_reply_deadline = deadline
+        self.extend_reply_deadline(deadline)
 
     def latest_reply_deadline(self) -> float | None:
         """Answer the latest deadline `add_delayed_reply` has recorded.
@@ -626,6 +665,22 @@ class RpcManager(threading.Thread):
         ).add_done_callback(self._report_server_failure)
         loop.run_forever()
 
+    def interrupt(self) -> None:
+        """Stop accepting new RPC work, without waiting for this thread.
+
+        Core's `InterruptHTTPServer` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): swaps in the request
+        callback that answers `503` and calls `g_threadpool_http.Interrupt()`,
+        both ahead of `StopHTTPServer`'s own `Stop()`, so a request already
+        queued keeps draining in the background while a new one is refused
+        at once rather than either queued or left for `stop` to close
+        unanswered. `Node._drain_rpc_queue` calls this before it drains,
+        which is what bounds that drain to what was queued before this
+        call (btclib-org/btclib-node#1515).
+        """
+        with self.queue_lock:
+            self.interrupted.set()
+
     def stop(self) -> None:
         """Stop this manager's loop, join its thread, and close every socket.
 
@@ -635,7 +690,16 @@ class RpcManager(threading.Thread):
         pending-task sweep runs as its own pass rather than folded into
         one combined loop, and why closing `_server_sockets` here does
         not race `server`'s own `ExitStack`.
+
+        Sets `interrupted` too, unconditionally: Core's `ThreadPool::Stop`
+        sets `m_interrupt = true` itself rather than relying on a prior
+        `Interrupt()` call, and a caller here that goes straight to `stop`
+        -- every test that never calls `Node`, and `RpcManager.stop`'s own
+        callers before btclib-org/btclib-node#1515 -- gets the identical
+        guarantee: nothing reaches `messages` once this method has begun.
         """
+        with self.queue_lock:
+            self.interrupted.set()
         stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded
@@ -708,8 +772,11 @@ class RpcManager(threading.Thread):
         # before the cancel sweep below reaches it, and finished further
         # down, uncancelled: cancelling it would discard the reply the
         # client asked `stop`'s own `wait` to delay, not to drop
-        # (btclib-org/btclib-node#1467). Every one not yet finished is in
-        # `pending`, stepped or not: `run_coroutine_threadsafe` queued its
+        # (btclib-org/btclib-node#1467), or cut short one
+        # `RpcConnection.send` wrote once shutdown had begun, still
+        # waiting on the socket (btclib-org/btclib-node#1506). Every one
+        # not yet finished is in `pending`, stepped or not:
+        # `run_coroutine_threadsafe` queued its
         # creation through `call_soon_threadsafe` on `Node`'s thread
         # before this method, on that same thread, queued `loop.stop`
         # behind it, and `join` above returned only once this loop had
@@ -750,9 +817,11 @@ class RpcManager(threading.Thread):
                 self.loop.run_until_complete(task)
         # Uncancelled, and with no bound of its own beyond `wait` itself
         # -- already validated finite by `stop_wait_param` before this
-        # task was ever scheduled. Core's own `ThreadPool::Stop`
-        # (`util/threadpool.h`, at bitcoin/bitcoin@9be056a8a7, the
-        # v31.1 tag) joins every worker thread with no timeout either,
+        # task was ever scheduled -- or the `request_timeout`
+        # `RpcConnection.send` bounds its own write with. Core's own
+        # `ThreadPool::Stop` (`util/threadpool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) joins every
+        # worker thread with no timeout either,
         # finishing whatever request that thread is mid-answer on --
         # including one asleep in `stop`'s own hidden `wait` -- rather
         # than abandoning it, so a bound here would itself be an
