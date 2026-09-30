@@ -1282,6 +1282,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   vulnerabilities its release is not affected by, into the document's
   `vulnerabilities`; no list, no key (issue btclib-org/.github#1469).
 
+### `RpcManager.stop` finishes every reply its loop has begun
+
+- **A reply begun before shutdown, or by the RPC loop itself such as a `401`,
+  is written rather than cancelled, as Core's `StopHTTPServer` waits for it;
+  an idle kept-alive connection is not waited for** (closes #1539).
+
+### The RPC loop's own refusals say they close once shutdown has begun
+
+- **A 401, 403, 404, 405 or parse-error reply written once shutdown has begun
+  carries `Connection: close`, as Core's `HTTPRequest::WriteReply` adds it**
+  (closes #1542).
+
+### A request on an idle RPC connection during shutdown's wait is answered 503
+
+- **`RpcManager.stop` keeps every connection reading while it waits for the
+  replies it finishes, so a request arriving on one is answered `503` with
+  `Connection: close`, as Core's event loop answers it** (closes #1545).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
