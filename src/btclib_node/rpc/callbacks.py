@@ -709,7 +709,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     (`validation.cpp:4225`, same sha), which this node's own
     `block_index.add_headers` answers the identical way
     `p2p.callbacks.block` already reads it (missing rather than invalid),
-    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `AcceptBlockHeader`'s `"bad-prevblk"` for a parent marked invalid, and
+    `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
     `add_headers` raises in Core's words (`src/validation.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block is
     answered with btclib's own exception message instead of one of Core's:
