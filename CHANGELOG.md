@@ -1156,6 +1156,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-chain=testnet4` as Core's own `-testnet4` does, and a header failing
   BIP94's timewarp bound is a `MisbehavingError`** (closes #1442).
 
+### `getpeerinfo`'s `addr` is the name a peer was dialled by, where one was given
+
+- **`addr` and `disconnectnode`'s `address` match answer the string a peer
+  was dialled by once held, the formatted socket address otherwise**, as
+  Core's `m_addr_name` does (closes #1301).
+
+### A `-connect` or `-seednode` spec's own port now survives to `addr_name`
+
+- **`-connect` and `-seednode` keep the raw spec given, port included,
+  the way `-addnode` already did, so `addr_name` carries it too** (closes
+  #1493).
+
+### A literal-IP `-addnode` is held by its resolved address, not by name
+
+- **A `-addnode` spec that is a literal IP is now held by every
+  connection's own resolved address, whatever route opened it, matching
+  Core's `mapConnected`** (closes #1498).
+
 ### A manual dial's resolved answers are capped at 256
 
 - **`async_connect_host` no longer shuffles, validates or dials more
